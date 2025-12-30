@@ -19,6 +19,9 @@ const CONFIG = {
   SMTP_USER: process.env[`${PREFIX}_SMTP_USER`],
   SMTP_PASS: process.env[`${PREFIX}_SMTP_PASS`],
   SMTP_SECURE: process.env[`${PREFIX}_SMTP_SECURE`],
+     CLOUDINARY_CLOUD_NAME: process.env[`${PREFIX}_CLOUDINARY_CLOUD_NAME`],
+    CLOUDINARY_API_KEY: process.env[`${PREFIX}_CLOUDINARY_API_KEY`],
+    CLOUDINARY_API_SECRET: process.env[`${PREFIX}_CLOUDINARY_API_SECRET`],
 
   // Database Configuration
   DB: {

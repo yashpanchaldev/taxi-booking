@@ -4,15 +4,19 @@ import path from "path";
 import crypto from "crypto";
 import axios from "axios";
 import qs from "qs";
+import { cloudinary } from "../config/cloudinary.js";
+import { v4 as uuidv4 } from "uuid";
 
 class Base {
   constructor() {
     this.s = 0;
     this.m = "Something went wrong please try again...";
+    this.io = this.io
     this.r = null;
     this.c = null;
     this.err = null;
     this.db = POOL;
+
   }
 
   // varify required perms
@@ -51,6 +55,7 @@ class Base {
       err: this.err,
     });
   }
+
 
   // generate password
   generate_password(data) {
@@ -110,6 +115,8 @@ class Base {
       .update(user_id.toString())
       .digest("hex");
   }
+
+
 
   // generate token
   generate_token(user_id) {
@@ -275,6 +282,98 @@ class Base {
       console.error(err.message);
       return null;
     }
+  }
+
+  async uploadMultipleToCloudinary(files, pathDirectory) {
+    try {
+      if (!files) return [];
+
+      console.log
+      const folderPath = pathDirectory || "general";
+      const urls = [];
+
+      if (Array.isArray(files)) {
+        for (let file of files) {
+          const uniqueName = uuidv4();
+          const result = await cloudinary.uploader.upload(
+            file.tempFilePath || file.path || file,
+            {
+              folder: "HealthCare",
+              public_id: uniqueName,
+              resource_type: "auto",
+            }
+          );
+          urls.push(result.secure_url);
+        }
+      } else {
+        // Agar sirf ek file ho
+        const uniqueName = uuidv4();
+        const result = await cloudinary.uploader.upload(
+          files.tempFilePath || files.path || files,
+          {
+            folder: folderPath,
+            public_id: uniqueName,
+            resource_type: "auto",
+          }
+        );
+        urls.push(result.secure_url);
+      }
+      return urls;
+    } catch (err) {
+      console.error("Cloudinary Upload Error:", err.message);
+      return [];
+    }
+  }
+  async uploadSingleFileToCloudinary(file, folder = "general") {
+    try {
+      if (!file) return null;
+
+      const options = {
+        folder,
+        public_id: uuidv4(),
+        resource_type: "auto"
+      };
+
+      let result;
+      if (file.tempFilePath && file.tempFilePath !== "") {
+        // Case 1: express-fileupload with useTempFiles
+        result = await cloudinary.uploader.upload(file.tempFilePath, options);
+      } else if (file.data) {
+        // Case 2: express-fileupload without temp files (uses buffer)
+        const base64 = `data:${file.mimetype};base64,${file.data.toString("base64")}`;
+        result = await cloudinary.uploader.upload(base64, options);
+      } else {
+        console.warn("Invalid file input:", file);
+        return null;
+      }
+
+      return result.secure_url;
+    } catch (err) {
+      console.error("Cloudinary upload error:", err.message);
+      return null;
+    }
+  }
+
+  // Hash OTP or any secret data
+  async generateHash(data) {
+    return new Promise((resolve, reject) => {
+      const salt = crypto.randomBytes(16).toString("hex");
+      crypto.scrypt(data, salt, 64, (err, derivedKey) => {
+        if (err) return reject(err);
+        resolve(salt + ":" + derivedKey.toString("hex")); // salt + hash
+      });
+    });
+  }
+
+  // Compare plain OTP with hashed version
+  async compareHash(data, storedHash) {
+    return new Promise((resolve, reject) => {
+      const [salt, key] = storedHash.split(":");
+      crypto.scrypt(data, salt, 64, (err, derivedKey) => {
+        if (err) return reject(err);
+        resolve(key === derivedKey.toString("hex"));
+      });
+    });
   }
 }
 

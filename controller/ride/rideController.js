@@ -1,11 +1,10 @@
 import { Base } from "../../service/base.js";
 
-export default class RideController extends Base{
-    constructor(){
-        super()
-    }
-
-   async EstimateFare(req, res,next) {
+class RideController extends Base {
+  constructor(io) {
+    super(io); // ✅ pass io to Base
+  }
+  async EstimateFare(req, res, next) {
     try {
       const { distance_km } = req.body;
 
@@ -40,10 +39,19 @@ export default class RideController extends Base{
       return this.send_res(res);
     }
   }
-
-  async create(req, res,next) {
+  async create(req, res) {
     try {
       const userId = req._id;
+      const user = await this.selectOne(
+        `SELECT role FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      if (!user || user.role !== 'RIDER') {
+        this.s = 0;
+        this.m = "Only riders can create rides";
+        return this.send_res(res);
+      }
       const {
         cab_type_id,
         estimated_fare,
@@ -53,15 +61,13 @@ export default class RideController extends Base{
         pickup_address,
         drop_lat,
         drop_lng,
-        drop_address,
-        payment_method
+        drop_address
       } = req.body;
 
-      // 1️⃣ Active ride check
       const activeRide = await this.selectOne(
         `SELECT id FROM rides
-         WHERE user_id = ?
-         AND status IN ('REQUESTED','DRIVER_ASSIGNED','ONGOING')`,
+       WHERE user_id = ?
+       AND status IN ('REQUESTED','DRIVER_ASSIGNED','ONGOING')`,
         [userId]
       );
 
@@ -71,79 +77,498 @@ export default class RideController extends Base{
         return this.send_res(res);
       }
 
-      // 3️⃣ Find nearby drivers (≤ 3km)
-const drivers = await this.select(
-  `
-  SELECT 
-  u.id AS driver_id,
-  u.socket_id,
-  calculate_distance(?, ?, u.last_lat, u.last_lng) AS distance_km
-FROM users u
-JOIN driver_vehicles dv ON dv.driver_id = u.id
-LEFT JOIN rides r
-  ON r.driver_id = u.id
- AND r.status IN ('DRIVER_ASSIGNED','ONGOING')
-WHERE u.role = 'DRIVER'
-  AND u.is_live = 1
-  AND u.socket_id IS NOT NULL
-  AND TRIM(u.socket_id) != ''
-  AND dv.cab_type_id = ?
-  AND r.id IS NULL
-HAVING distance_km <= 3
-ORDER BY distance_km ASC
-LIMIT 10
+      const rideId = await this.insert(
+        `INSERT INTO rides
+       (user_id, cab_type_id,
+        pickup_lat, pickup_lng, pickup_address,
+        drop_lat, drop_lng, drop_address,
+        estimated_fare, distance_km)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          userId,
+          cab_type_id,
+          pickup_lat,
+          pickup_lng,
+          pickup_address || null,
+          drop_lat,
+          drop_lng,
+          drop_address || null,
+          estimated_fare,
+          distance_km
+        ]
+      );
 
-  `,
-  [
-    pickup_lat,
-    pickup_lng,
-    cab_type_id
-  ]
-);
-for (const d of drivers) {
+      const drivers = await this.select(
+        `
+      SELECT 
+        u.id AS driver_id,
+        u.socket_id,
+        calculate_distance(?, ?, u.last_lat, u.last_lng) AS distance_km
+      FROM users u
+      JOIN driver_vehicles dv ON dv.driver_id = u.id
+      LEFT JOIN rides r
+        ON r.driver_id = u.id
+       AND r.status IN ('DRIVER_ASSIGNED','ONGOING')
+      WHERE u.role = 'DRIVER'
+        AND u.is_live = 1
+        AND u.socket_id IS NOT NULL
+        AND dv.cab_type_id = ?
+        AND r.id IS NULL
+      HAVING distance_km <= 3
+      ORDER BY distance_km ASC
+      LIMIT 10
+      `,
+        [pickup_lat, pickup_lng, cab_type_id]
+      );
 
-  // // 1️⃣ Store request
-  // await this.insert(
-  //   `INSERT INTO ride_requests (ride_id, driver_id)
-  //    VALUES (?, ?)`,
-  //   [rideId, d.driver_id]
-  // );
+      for (const d of drivers) {
 
-  // 2️⃣ Send real-time request
-  if (this.io) {
-    this.io.to(`driver_${d.driver_id}`).emit("NEW_RIDE_REQUEST", {
-      // ride_id: rideId,
-      pickup: {
-        lat: pickup_lat,
-        lng: pickup_lng,
-        address: pickup_address
-      },
-      drop: {
-        lat: drop_lat,
-        lng: drop_lng,
-        address: drop_address
-      },
-      estimated_fare,
-      distance_km
-    });
-  }
-}
+        await this.insert(
+          `INSERT INTO ride_requests (ride_id, driver_id)
+         VALUES (?, ?)`,
+          [rideId, d.driver_id]
+        );
 
-     
-
+        if (this.io) {
+          this.io.to(`driver_${d.driver_id}`).emit("NEW_RIDE_REQUEST", {
+            ride_id: rideId,
+            pickup: {
+              lat: pickup_lat,
+              lng: pickup_lng,
+              address: pickup_address
+            },
+            drop: {
+              lat: drop_lat,
+              lng: drop_lng,
+              address: drop_address
+            },
+            estimated_fare,
+            distance_km
+          });
+        }
+      }
 
       this.s = 1;
-      this.m = "Ride created & request sent to drivers";
+      this.m = "Ride created and sent to nearby drivers";
       this.r = {
-        drivers
+        ride_id: rideId,
+        drivers_notified: drivers.length
       };
 
       return this.send_res(res);
 
-    } catch (error) {
+    } catch (err) {
       this.s = 0;
-      this.err = error.message;
+      this.err = err.message;
       return this.send_res(res);
     }
   }
+  async acceptRide(req, res) {
+    try {
+      // const driverId = req._id;
+      const { ride_id, driverId } = req.body;
+
+      const driver = await this.selectOne(
+        `SELECT role FROM users WHERE id = ?`,
+        [driverId]
+      );
+
+      if (!driver || driver.role !== 'DRIVER') {
+        this.s = 0;
+        this.m = "Only drivers can accept rides";
+        return this.send_res(res);
+      }
+
+      const ride = await this.selectOne(
+        `SELECT * FROM rides 
+       WHERE id = ? AND status = 'REQUESTED'`,
+        [ride_id]
+      );
+
+      if (!ride) {
+        this.s = 0;
+        this.m = "Ride not available";
+        return this.send_res(res);
+      }
+
+      if (ride.driver_id) {
+        this.s = 0;
+        this.m = "Ride already accepted by another driver";
+        return this.send_res(res);
+      }
+
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpHash = await this.generateHash(otp);
+      const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+
+      await this.update(
+        `UPDATE rides
+       SET driver_id = ?, 
+           status = 'DRIVER_ASSIGNED',
+           otp_token = ?,
+           otp_expires = ?
+       WHERE id = ? AND driver_id IS NULL`,
+        [driverId, otpHash, otpExpires, ride_id]
+      );
+
+      await this.update(
+        `UPDATE ride_requests
+       SET status = 'ACCEPTED', responded_at = NOW()
+       WHERE ride_id = ? AND driver_id = ?`,
+        [ride_id, driverId]
+      );
+
+      await this.update(
+        `UPDATE ride_requests
+       SET status = 'EXPIRED'
+       WHERE ride_id = ? AND driver_id != ?`,
+        [ride_id, driverId]
+      );
+
+      if (this.io) {
+        this.io.to(`rider_${ride.user_id}`).emit("RIDE_ACCEPTED", {
+          ride_id,
+          driver_id: driverId,
+          otp
+        });
+      }
+
+      this.s = 1;
+      this.m = "Ride accepted successfully";
+      this.r = {
+        ride_id,
+        otpExpires
+      };
+
+      return this.send_res(res);
+
+    } catch (err) {
+      this.s = 0;
+      this.err = err.message;
+      return this.send_res(res);
+    }
+  }
+
+
+  async liveStatus(req, res) {
+    try {
+      const userId = req._id;
+
+      // 1️⃣ Get logged-in user role
+      const user = await this.selectOne(
+        `SELECT id, role FROM users WHERE id = ?`,
+        [userId]
+      );
+
+      if (!user) {
+        this.s = 0;
+        this.m = "User not found";
+        return this.send_res(res);
+      }
+
+      let ride;
+
+      if (user.role === 'RIDER') {
+        ride = await this.selectOne(
+          `
+        SELECT 
+          r.id AS ride_id,
+          r.status,
+          r.estimated_fare,
+          r.payment_method,
+          r.pickup_address,
+          r.drop_address,
+
+          u.id AS driver_id,
+          u.name AS driver_name,
+          u.phone AS driver_phone
+
+        FROM rides r
+        LEFT JOIN users u ON u.id = r.driver_id
+        WHERE r.user_id = ?
+          AND r.status IN (
+            'REQUESTED',
+            'DRIVER_ASSIGNED',
+            'ARRIVING',
+            'ONGOING'
+          )
+        ORDER BY r.id DESC
+        LIMIT 1
+        `,
+          [userId]
+        );
+
+      } else if (user.role === 'DRIVER') {
+
+        // Driver view → include RIDER info
+        ride = await this.selectOne(
+          `
+        SELECT 
+          r.id AS ride_id,
+          r.status,
+          r.estimated_fare,
+          r.payment_method,
+          r.pickup_address,
+          r.drop_address,
+
+          u.id AS rider_id,
+          u.name AS rider_name,
+          u.phone AS rider_phone
+
+        FROM rides r
+        JOIN users u ON u.id = r.user_id
+        WHERE r.driver_id = ?
+          AND r.status IN (
+            'DRIVER_ASSIGNED',
+            'ARRIVING',
+            'ONGOING'
+          )
+        ORDER BY r.id DESC
+        LIMIT 1
+        `,
+          [userId]
+        );
+
+      } else {
+        this.s = 0;
+        this.m = "Invalid role";
+        return this.send_res(res);
+      }
+
+      this.s = 1;
+      this.r = ride || null;
+      return this.send_res(res);
+
+    } catch (err) {
+      this.s = 0;
+      this.err = err.message;
+      return this.send_res(res);
+    }
+  }
+
+
+  async arriving(req, res, next) {
+    try {
+      const { driverId, ride_id } = req.body
+
+      const driver = await this.selectOne("SELECT role FROM users WHERE id = ?", [driverId])
+
+      if (!driver || driver.role !== 'DRIVER') {
+        this.s = 0;
+        this.m = "Only driver allowed";
+        return this.send_res(res);
+      }
+
+      const updated = await this.update(
+        `UPDATE rides
+       SET status = 'ARRIVING'
+       WHERE id = ?
+         AND driver_id = ?
+         AND status = 'DRIVER_ASSIGNED'`,
+        [ride_id, driverId]
+      )
+
+      if (!updated) {
+        this.s = 0;
+        this.m = "Ride not available for arriving";
+        return this.send_res(res);
+      }
+
+      if (this.io) {
+        const ride = await this.selectOne(
+          `SELECT user_id FROM rides WHERE id = ?`,
+          [ride_id]
+        );
+        this.io.to(`rider_${ride.user_id}`).emit("DRIVER_ARRIVING", {
+          ride_id
+        });
+      }
+      this.s = 1;
+      this.m = "Driver marked as arriving";
+      return this.send_res(res);
+
+
+    } catch (error) {
+
+      this.s = 0;
+      this.err = err.message;
+      return this.send_res(res);
+    }
+  }
+  async startRide(req, res) {
+    try {
+      console.log("Request Body:", req.body);
+
+      const { ride_id, driverId, otp } = req.body;
+
+
+
+      if (typeof otp !== "string") {
+        this.s = 0;
+        this.m = "OTP must be a string";
+        return this.send_res(res);
+      }
+
+      // -----------------------------
+      // 2️⃣ Fetch Ride
+      // -----------------------------
+      const ride = await this.selectOne(
+        `
+      SELECT id, otp_token, otp_expires, user_id
+      FROM rides
+      WHERE id = ?
+        AND driver_id = ?
+        AND status = 'ARRIVING'
+      `,
+        [ride_id, driverId]
+      );
+
+      if (!ride) {
+        this.s = 0;
+        this.m = "Ride not found or not ready to start";
+        return this.send_res(res);
+      }
+
+      // -----------------------------
+      // 3️⃣ OTP Expiry Check
+      // -----------------------------
+      const now = new Date();
+      const otpExpiry = new Date(ride.otp_expires);
+
+      if (now > otpExpiry) {
+        this.s = 0;
+        this.m = "OTP expired";
+        return this.send_res(res);
+      }
+
+      // -----------------------------
+      // 4️⃣ OTP Validation
+      // -----------------------------
+      const isValidOtp = await this.compareHash(
+        String(otp),
+        ride.otp_token
+      );
+
+      if (!isValidOtp) {
+        this.s = 0;
+        this.m = "Invalid OTP";
+        return this.send_res(res);
+      }
+
+      // -----------------------------
+      // 5️⃣ Start Ride
+      // -----------------------------
+      await this.update(
+        `
+      UPDATE rides
+      SET status = 'ONGOING',
+          otp_token = NULL,
+          otp_expires = NULL
+      WHERE id = ?
+      `,
+        [ride_id]
+      );
+
+      // -----------------------------
+      // 6️⃣ Socket Event
+      // -----------------------------
+      if (this.io) {
+        this.io.to(`rider_${ride.user_id}`).emit("RIDE_STARTED", {
+          ride_id,
+          status: "ONGOING"
+        });
+      }
+
+      // -----------------------------
+      // 7️⃣ Success Response
+      // -----------------------------
+      this.s = 1;
+      this.m = "Ride started successfully";
+      this.r = {
+        ride_id,
+        status: "ONGOING"
+      };
+
+      return this.send_res(res);
+
+    } catch (err) {
+      console.error("Start Ride Error:", err);
+
+      this.s = 0;
+      this.m = "Something went wrong";
+      this.err = err.message;
+      return this.send_res(res);
+    }
+  }
+
+
+  async endRide(req, res) {
+    try {
+      // const driverId = req._id;
+      const { ride_id, final_fare, driverId } = req.body;
+      /* 1️⃣ Role check */
+      const driver = await this.selectOne(
+        `SELECT role FROM users WHERE id = ?`,
+        [driverId]
+      );
+
+      if (!driver || driver.role !== 'DRIVER') {
+        this.s = 0;
+        this.m = "Only driver can end the ride";
+        return this.send_res(res);
+      }
+
+      /* 2️⃣ Fetch active ride */
+      const ride = await this.selectOne(
+        `SELECT id, user_id
+       FROM rides
+       WHERE id = ?
+         AND driver_id = ?
+         AND status = 'ONGOING'`,
+        [ride_id, driverId]
+      );
+
+      if (!ride) {
+        this.s = 0;
+        this.m = "Ride not found or not active";
+        return this.send_res(res);
+      }
+
+      /* 3️⃣ End ride */
+      await this.update(
+        `UPDATE rides
+       SET status = 'COMPLETED',
+           final_fare = ?
+       WHERE id = ?`,
+        [final_fare, ride_id]
+      );
+
+      /* 4️⃣ Notify rider */
+      if (this.io) {
+        this.io.to(`rider_${ride.user_id}`).emit("RIDE_COMPLETED", {
+          ride_id,
+          final_fare
+        });
+      }
+
+      this.s = 1;
+      this.m = "Ride completed successfully";
+      this.r = {
+        ride_id,
+        final_fare,
+        status: "COMPLETED"
+      };
+
+      return this.send_res(res);
+
+    } catch (err) {
+      this.s = 0;
+      this.err = err.message;
+      return this.send_res(res);
+    }
+  }
+
+
 }
+
+export default RideController;

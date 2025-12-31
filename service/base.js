@@ -8,17 +8,15 @@ import { cloudinary } from "../config/cloudinary.js";
 import { v4 as uuidv4 } from "uuid";
 
 class Base {
-  constructor() {
+constructor(io = null) {
+    this.io = io;          // ✅ FIX
     this.s = 0;
     this.m = "Something went wrong please try again...";
-    this.io = this.io
     this.r = null;
     this.c = null;
     this.err = null;
     this.db = POOL;
-
   }
-
   // varify required perms
   varify_req(req, perm, media = []) {
     const is_required = [];

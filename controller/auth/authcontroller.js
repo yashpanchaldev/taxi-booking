@@ -18,7 +18,6 @@ export default class AuthController extends Base {
         "gender",
         "dob"
       ];
-
       if (this.varify_req(req, requiredFields)) {
         this.s = 0;
         return this.send_res(res);

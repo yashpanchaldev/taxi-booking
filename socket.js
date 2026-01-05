@@ -23,12 +23,12 @@ export const registerSocketHandlers = (io) => {
           "UPDATE users SET socket_id = ? WHERE id = ?",
           [socket.id, userId]
         );
-
+        
         // join role-based room
         socket.join(`${user.role.toLowerCase()}_${userId}`);
         console.log(`${user.role.toLowerCase()}_${userId}`)
 
-        console.log(`${user.role} ${userId} joined room`);
+        // console.log(`${user.role} ${userId} joined room`);
       } catch (error) {
         console.log("Socket login error:", error);
       }

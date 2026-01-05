@@ -36,5 +36,10 @@ router.route("/end").post((req,res,next)=>{
     const U = new Ride(io)
     return U.endRide(req,res,next)
 })
+router.route("/cancel").post((req,res,next)=>{
+    const io = req.app.get("io")
+    const U = new Ride(io)
+    return U.cancelRide(req,res,next)
+})
 
 export default router

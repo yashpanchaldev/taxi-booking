@@ -27,7 +27,7 @@ const CONFIG = {
   DB: {
     host: process.env[`${PREFIX}_DB_HOST`],
     user: process.env[`${PREFIX}_DB_USER`],
-    password: process.env[`${PREFIX}_DB_PASS`],
+    password: process.env[`${PREFIX}_DB_PASS`],  
     database: process.env[`${PREFIX}_DB_NAME`],
     connectionLimit: parseInt(
       process.env[`${PREFIX}_DB_CONN_LIMIT`] || "100",
